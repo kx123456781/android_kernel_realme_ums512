@@ -1,0 +1,78 @@
+name: Build Realme C25Y Kernel (Enhanced)
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Source
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: Install Dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y bc build-essential flex bison lz4 libssl-dev libelf-dev \
+          python3 python2 libncurses-dev git-lfs mkbootimg cpio zip
+
+      - name: Setup Toolchains
+        run: |
+          mkdir -p toolchain/clang
+          # 使用更稳定的 AOSP Clang 12 (针对 4.14 优化较好)
+          wget https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/refs/heads/android12-release/clang-r416183b.tar.gz
+          tar -C toolchain/clang -xf clang-r416183b.tar.gz
+          # 下载 GCC 辅助
+          git clone https://android.googlesource.com/platform/prebuilts/gcc/linux-x86/aarch64/aarch64-linux-android-4.9 -b android12-release --depth=1 toolchain/gcc64
+          git clone https://android.googlesource.com/platform/prebuilts/gcc/linux-x86/arm/arm-linux-androideabi-4.9 -b android12-release --depth=1 toolchain/gcc32
+
+      - name: Sanity Check & Fix
+        run: |
+          # 给予所有脚本可执行权限，防止编译中途 Permission Denied
+          find . -name "*.sh" -exec chmod +x {} +
+          find scripts -type f -exec chmod +x {} +
+          # 展锐平台可能需要这个软链接
+          ln -sf /usr/bin/python3 python
+
+      - name: Build Kernel
+        run: |
+          export PATH=$(pwd)/toolchain/clang/bin:$(pwd)/toolchain/gcc64/bin:$(pwd)/toolchain/gcc32/bin:$PATH
+          
+          # 核心编译参数
+          IMAGE_NAME=Image.gz-dtb
+          DEFCONFIG=RMX3265_defconfig
+          OUT=out
+          
+          # 清理并开始
+          make clean && rm -rf $OUT
+          make O=$OUT ARCH=arm64 $DEFCONFIG
+          
+          # 开始正式编译
+          make -j$(nproc --all) O=$OUT \
+               ARCH=arm64 \
+               CC=clang \
+               CLANG_TRIPLE=aarch64-linux-gnu- \
+               CROSS_COMPILE=aarch64-linux-android- \
+               CROSS_COMPILE_ARM32=arm-linux-androideabi- \
+               KBUILD_BUILD_USER="Emma" \
+               KBUILD_BUILD_HOST="Arch-GitHub"
+
+      - name: Check Results
+        run: |
+          if [ -f out/arch/arm64/boot/Image.gz-dtb ]; then
+              echo "Kernel built successfully!"
+          else
+              echo "Build failed: Image.gz-dtb not found."
+              exit 1
+          fi
+
+      - name: Upload Kernel
+        uses: actions/upload-artifact@v4
+        with:
+          name: Realme-C25Y-Kernel-${{ github.run_id }}
+          path: |
+            out/arch/arm64/boot/Image.gz-dtb
+            out/arch/arm64/boot/dtbo.img
+            out/arch/arm64/boot/Image
